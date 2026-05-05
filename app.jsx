@@ -1,7 +1,7 @@
 /* Dice Golf — main app */
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
-const { generateHole, legalShotPath, hookShotPath, hookLanding, hookPossibleLandings, hookMaxSteps, validateHookAtAmount, shiftDir, applySlopes, pointToDirDist } = window.DiceGolf;
+const { generateHole, legalShotPath, hookShotPath, hookLanding, hookPossibleLandings, hookMaxSteps, validateHookAtAmount, shiftDir, applySlopes, waterDrop, pointToDirDist } = window.DiceGolf;
 const DIRS = window.DiceGolf.dirNames;
 const DIRV = window.DiceGolf.dirVectors;
 
@@ -29,11 +29,10 @@ const DEFAULT_TWEAKS = {
   showHints: true,
   showCompass: true,
   difficulty: 'Standard',
-  bigfootEnabled: true,
   cellSize: 38,
 };
 
-function App() {
+function App({ customCourse }) {
   const [tweaks, setTweaks] = useState(DEFAULT_TWEAKS);
   const setTweak = useCallback((key, val) => {
     setTweaks(prev => ({ ...prev, [key]: val }));
@@ -45,8 +44,8 @@ function App() {
   const [holeIdx, setHoleIdx] = useState(0);
   const holeSeeds = useMemo(() => [seed, seed + 7919, seed + 15485, seed + 24593, seed + 32452, seed + 49157, seed + 65537, seed + 86939, seed + 99991], [seed]);
 
-  const hole = useMemo(() => generateHole(holeSeeds[holeIdx], { w: 22, h: 13 }), [holeSeeds, holeIdx]);
-  const courseName = useMemo(() => pickName(seed), [seed]);
+  const hole = useMemo(() => customCourse ? customCourse.holes[holeIdx] : generateHole(holeSeeds[holeIdx], { w: 22, h: 13 }), [holeSeeds, holeIdx, customCourse]);
+  const courseName = useMemo(() => customCourse ? customCourse.name : pickName(seed), [seed, customCourse]);
 
   const [ball, setBall] = useState(hole.tee);
   const [shots, setShots] = useState([]);
@@ -58,13 +57,16 @@ function App() {
   const [hook, setHook] = useState(null); // null | 'left' | 'right'
   const [hoverCell, setHoverCell] = useState(null);
   const [mulligansUsed, setMulligansUsed] = useState(0);
-  const [pickupFound, setPickupFound] = useState(false);
-  const [hasPickup, setHasPickup] = useState(false);
-  const [usePickupActive, setUsePickupActive] = useState(false);
+  const [focus, setFocus] = useState(() => customCourse?.startingFocus ?? 0);
+  const [useFocusActive, setUseFocusActive] = useState(false);
+  const [focusUsedThisHole, setFocusUsedThisHole] = useState(false);
+  const [highlightedClub, setHighlightedClub] = useState(0);
+  const [showHotkeys, setShowHotkeys] = useState(false);
   const [holeScores, setHoleScores] = useState([]);
   const [holeComplete, setHoleComplete] = useState(false);
   const [bigToast, setBigToast] = useState(null);
   const [statusMsg, setStatusMsg] = useState('Welcome to ' + pickName(1024) + '. Pick a club to tee off.');
+  const [roundLog, setRoundLog] = useState([]);
 
   useEffect(() => {
     setBall(hole.tee);
@@ -76,25 +78,130 @@ function App() {
     setHook(null);
     setHoverCell(null);
     setMulligansUsed(0);
-    setPickupFound(false);
-    setHasPickup(false);
-    setUsePickupActive(false);
+    setUseFocusActive(false);
+    setFocusUsedThisHole(false);
     setHoleComplete(false);
     setStatusMsg(`Hole ${holeIdx + 1} — Par ${hole.par}. Pick a club.`);
   }, [hole]);
 
+
+  // Keyboard controls (numpad)
   useEffect(() => {
-    if (!tweaks.bigfootEnabled) return;
-    if (hole.bigfoot && !pickupFound) {
-      const d = Math.hypot(ball.x - hole.bigfoot.x, ball.y - hole.bigfoot.y);
-      if (d <= 2.5) {
-        setPickupFound(true);
-        setHasPickup(true);
-        setBigToast({ label: 'BONUS FOUND', value: '+1 Range', sub: 'use it on any future shot' });
-        setTimeout(() => setBigToast(null), 2200);
+    const dirMap = {
+      Numpad8: 'N', Numpad9: 'NE', Numpad6: 'E', Numpad3: 'SE',
+      Numpad2: 'S', Numpad1: 'SW', Numpad4: 'W', Numpad7: 'NW',
+    };
+    const handler = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      // Hole complete — 5/Enter for next hole
+      if (holeComplete) {
+        if (e.code === 'Numpad5' || e.code === 'NumpadEnter' || e.code === 'Enter') {
+          e.preventDefault();
+          nextHole();
+        }
+        return;
       }
-    }
-  }, [ball, hole, tweaks.bigfootEnabled]);
+
+      // Phase 1: Club selection — numpad matches 2x2 layout
+      // 4=Driver  5=Woods
+      // 1=P.Wedge 2=Putter
+      if (!club) {
+        const clubMap = { Numpad4: 0, Numpad5: 1, Numpad1: 2, Numpad2: 3 };
+        if (clubMap[e.code] != null) {
+          e.preventDefault();
+          selectClub(CLUB_ORDER[clubMap[e.code]]);
+          return;
+        }
+        return;
+      }
+
+      // Phase 2: Roll die (club selected, needs roll, no die yet)
+      if (needsRoll && die == null && !rolling) {
+        const clubMap = { Numpad4: 0, Numpad5: 1, Numpad1: 2, Numpad2: 3 };
+        const pressedClub = clubMap[e.code] != null ? CLUB_ORDER[clubMap[e.code]] : null;
+        if (e.code === 'NumpadEnter' || e.code === 'Enter' || pressedClub === club) {
+          e.preventDefault();
+          rollDie();
+          return;
+        }
+        // Switch club
+        if (pressedClub && pressedClub !== club) {
+          e.preventDefault();
+          selectClub(pressedClub);
+          return;
+        }
+        // Back
+        if (e.code === 'Numpad0' || e.code === 'Escape') {
+          e.preventDefault();
+          setClub(null); setDie(null); setAimingDir(null); setHook(null);
+          return;
+        }
+        return;
+      }
+
+      // Phase 3: Aiming (have distance)
+      if (plannedDistance != null && !rolling) {
+        // Direction keys
+        if (dirMap[e.code]) {
+          e.preventDefault();
+          const d = dirMap[e.code];
+          if (aimingDir === d) {
+            if (ghost && ghost.legal) commitShot(d);
+          } else {
+            setAimingDir(d);
+          }
+          return;
+        }
+
+        // Confirm with 5/Enter
+        if ((e.code === 'Numpad5' || e.code === 'NumpadEnter' || e.code === 'Enter') && aimingDir) {
+          e.preventDefault();
+          if (ghost && ghost.legal) commitShot();
+          return;
+        }
+
+        // Hook toggle (numpad +/-)
+        if (e.code === 'NumpadAdd' && plannedDistance >= 2 && club !== 'putter') {
+          e.preventDefault();
+          setHook(h => h === 'right' ? null : 'right');
+          return;
+        }
+        if (e.code === 'NumpadSubtract' && plannedDistance >= 2 && club !== 'putter') {
+          e.preventDefault();
+          setHook(h => h === 'left' ? null : 'left');
+          return;
+        }
+
+        // Focus toggle (NumpadDecimal / period)
+        if ((e.code === 'NumpadDecimal' || e.code === 'Period') && focus > -2) {
+          e.preventDefault();
+          setUseFocusActive(v => !v);
+          return;
+        }
+
+        // Re-roll (Numpad0 when canReroll, otherwise back)
+        if (e.code === 'Numpad0' || e.code === 'Escape') {
+          e.preventDefault();
+          if (canReroll && e.code === 'Numpad0') {
+            rerollDie();
+          } else {
+            setClub(null); setDie(null); setAimingDir(null); setHook(null);
+          }
+          return;
+        }
+      }
+
+      // Mulligan (numpad * — available any time a club is selected)
+      if (e.code === 'NumpadMultiply' && club && mullRemaining > 0 && !rolling) {
+        e.preventDefault();
+        useMulligan();
+        return;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
 
   const ballTerrain = hole.grid[ball.y][ball.x];
   const fromFairway = ballTerrain === 1 || ballTerrain === 5;
@@ -102,18 +209,31 @@ function App() {
 
   const clubSpec = club ? CLUBS[club] : null;
 
+  const frustration = focus < 0 ? focus : 0; // negative number
   const plannedDistance = useMemo(() => {
     if (!clubSpec) return null;
-    if (clubSpec.fixed != null) return clubSpec.fixed + (usePickupActive ? 1 : 0);
+    if (clubSpec.fixed != null) return Math.max(1, clubSpec.fixed + (useFocusActive ? 1 : 0) + frustration);
     if (die == null) return null;
     let d = die;
     if (clubSpec.terrainMod) {
       if (fromFairway) d += 1;
       if (fromSand) d -= 1;
     }
-    if (usePickupActive) d += 1;
+    d += frustration; // apply frustration penalty
+    if (useFocusActive) d += 1;
     return Math.max(1, d);
-  }, [clubSpec, die, fromFairway, fromSand, usePickupActive]);
+  }, [clubSpec, die, fromFairway, fromSand, useFocusActive, frustration]);
+
+  const distanceRange = useMemo(() => {
+    if (!clubSpec) return null;
+    if (clubSpec.fixed != null) {
+      const d = Math.max(1, clubSpec.fixed + (useFocusActive ? 1 : 0) + frustration);
+      return [d, d];
+    }
+    let minD = 1 + (clubSpec.terrainMod && fromSand ? -1 : 0) + frustration + (useFocusActive ? 1 : 0);
+    let maxD = clubSpec.die + (clubSpec.terrainMod && fromFairway ? 1 : 0) + frustration + (useFocusActive ? 1 : 0);
+    return [Math.max(1, minD), Math.max(1, maxD)];
+  }, [clubSpec, fromFairway, fromSand, frustration, useFocusActive]);
 
   const overTrees = club
     ? (CLUBS[club].overTreesAlways || (club === 'woods' && fromFairway))
@@ -180,6 +300,10 @@ function App() {
   }, [aimingDir, plannedDistance, ball, hook]);
 
   const selectClub = (key) => {
+    if (club === key) {
+      if (needsRoll && die == null && !rolling) rollDie();
+      return;
+    }
     const spec = CLUBS[key];
     setClub(key);
     setDie(null);
@@ -215,6 +339,7 @@ function App() {
   const rerollDie = () => {
     if (hasRerolled || shots.length > 0 || !clubSpec || clubSpec.fixed != null || die == null) return;
     setHasRerolled(true);
+    setRoundLog(log => [...log, { type: 'reroll', hole: holeIdx + 1, club: clubSpec.label, prevRoll: die }]);
     setDie(null);
     setAimingDir(null);
     setTimeout(() => rollDie(), 50);
@@ -226,10 +351,12 @@ function App() {
     const totalAvail = mulligansMax;
     if (mulligansUsed >= totalAvail) return;
     setMulligansUsed(m => m + 1);
+    setRoundLog(log => [...log, { type: 'mulligan', hole: holeIdx + 1 }]);
     setDie(null);
     setClub(null);
     setAimingDir(null);
     setHook(null);
+    setUseFocusActive(false);
     setStatusMsg('Mulligan! Pick a new club.');
   };
 
@@ -249,14 +376,31 @@ function App() {
       bendPos = { x: land.bendX, y: land.bendY };
 
       if (!rv.ok) {
-        // Bad luck — ball lands at the bend point instead
-        const bendLand = hookLanding(ball, dir, plannedDistance, activeHook, 0);
+        if (rv.blockedReason === 'water_landing') {
+          const dropPos = waterDrop(hole, { x: land.x, y: land.y });
+          const penaltyShot = { from: ball, to: { x: land.x, y: land.y }, slopePath: [], fresh: true, hook: activeHook, bendPos, treeHit: null };
+          setShots(s => [...s.map(x => ({ ...x, fresh: false })), penaltyShot, { from: { x: land.x, y: land.y }, to: dropPos, slopePath: [], fresh: false, hook: null, bendPos: null, treeHit: null, penalty: true }]);
+          setBall(dropPos);
+          const mods = [];
+          if (clubSpec.terrainMod && fromFairway) mods.push('+1 fairway');
+          if (clubSpec.terrainMod && fromSand) mods.push('-1 sand');
+          if (useFocusActive) mods.push('+1 focus');
+          if (frustration < 0) mods.push(`${frustration} frustrated`);
+          setRoundLog(log => [...log,
+            { type: 'hit', hole: holeIdx + 1, stroke: shots.length + 1, club: clubSpec.label, die: die, dieSize: clubSpec.die, distance: plannedDistance, dir, hook: activeHook, hookAmount: actualHookAmount, mods: mods.length ? mods : null, bounced: false, hazard: 'water', result: 'water penalty' },
+            { type: 'penalty', hole: holeIdx + 1, stroke: shots.length + 2 },
+          ]);
+          if (useFocusActive) { setFocus(f => Math.max(-2, f - 1)); setUseFocusActive(false); setFocusUsedThisHole(true); }
+          setDie(null); setHasRerolled(false); setAimingDir(null); setHook(null); setClub(null);
+          setStatusMsg(`Hook ${actualHookAmount}/${max} — in the water! +1 penalty. Ball dropped beside water.`);
+          return;
+        }
+        // Other failures (OOB, tree in path) — fall back to bend point
         const bendCheck = validateHookAtAmount(hole, ball, dir, plannedDistance, activeHook, 0, { fromFairway, overTrees });
         if (!bendCheck.ok) {
           setStatusMsg(`Hook rolled ${actualHookAmount}/${max} — shot blocked! Pick another direction.`);
           return;
         }
-        setStatusMsg(`Hook rolled ${actualHookAmount}/${max} — landed in hazard! Ball stops at bend.`);
         actualHookAmount = 0;
       }
     } else {
@@ -289,7 +433,22 @@ function App() {
     let bounceMsg = '';
     let treeHitPos = null;
 
-    if (shotValidation.bounced) {
+    let ricochetDir = null;
+    if (shotValidation.ricochet) {
+      const DIRS_ALL = window.DiceGolf.dirNames;
+      const DIRV_ALL = window.DiceGolf.dirVectors;
+      ricochetDir = DIRS_ALL[Math.floor(Math.random() * 8)];
+      const rv = DIRV_ALL[ricochetDir];
+      const rx = shotValidation.ricochet.x + rv.dx;
+      const ry = shotValidation.ricochet.y + rv.dy;
+      if (window.DiceGolf.inBounds(hole.grid, rx, ry)) {
+        const rt = hole.grid[ry][rx];
+        if (rt !== 3 && rt !== 4 && rt !== 6) {
+          actualLanding = { x: rx, y: ry };
+        }
+      }
+      bounceMsg = ` Hit a rock — ricochet ${ricochetDir}!`;
+    } else if (shotValidation.bounced) {
       treeHitPos = { ...landing };
       actualLanding = shotValidation.bounced;
       landing = actualLanding;
@@ -313,9 +472,34 @@ function App() {
     setShots(s => [...s.map(x => ({ ...x, fresh: false })), newShot]);
     setBall(actualLanding);
 
-    if (usePickupActive) {
-      setHasPickup(false);
-      setUsePickupActive(false);
+    const mods = [];
+    if (clubSpec.terrainMod && fromFairway) mods.push('+1 fairway');
+    if (clubSpec.terrainMod && fromSand) mods.push('-1 sand');
+    if (useFocusActive) mods.push('+1 focus');
+    if (frustration < 0) mods.push(`${frustration} frustrated`);
+    const landTerrain = hole.grid[actualLanding.y]?.[actualLanding.x];
+    const hazard = landTerrain === 2 ? 'sand' : landTerrain === 3 ? 'water' : shotValidation.ricochet ? 'rock' : null;
+    setRoundLog(log => [...log, {
+      type: 'hit',
+      hole: holeIdx + 1,
+      stroke: shots.length + 1,
+      club: clubSpec.label,
+      die: clubSpec.fixed != null ? null : die,
+      dieSize: clubSpec.fixed != null ? null : clubSpec.die,
+      distance: plannedDistance,
+      dir,
+      hook: activeHook,
+      hookAmount: activeHook ? actualHookAmount : null,
+      mods: mods.length ? mods : null,
+      bounced: !!shotValidation.bounced,
+      hazard,
+      result: shotValidation.bounced ? 'tree bounce' : (landing.x === hole.cup.x && landing.y === hole.cup.y ? 'holed out' : null),
+    }]);
+
+    if (useFocusActive) {
+      setFocus(f => Math.max(-2, f - 1));
+      setUseFocusActive(false);
+      setFocusUsedThisHole(true);
     }
     setDie(null);
     setHasRerolled(false);
@@ -336,7 +520,13 @@ function App() {
                     diff === 3 ? 'TRIPLE BOGEY' :
                     `+${diff}`;
       const aceLabel = strokes === 1 ? 'HOLE IN ONE' : label;
-      setBigToast({ label: 'IN THE CUP', value: `${strokes}`, sub: aceLabel });
+      const maxFocus = 3;
+      let focusMsg = '';
+      if (!focusUsedThisHole && !useFocusActive) {
+        setFocus(f => Math.min(maxFocus, f + 1));
+        focusMsg = ' +1 Focus!';
+      }
+      setBigToast({ label: 'IN THE CUP', value: `${strokes}`, sub: aceLabel + (focusMsg ? ` ${focusMsg}` : '') });
       setTimeout(() => setBigToast(null), 2600);
       setHoleComplete(true);
       setHoleScores(prev => {
@@ -344,10 +534,10 @@ function App() {
         next[holeIdx] = strokes;
         return next;
       });
-      setStatusMsg(`Holed out in ${strokes}. ${aceLabel}.${hookMsg}`);
+      setStatusMsg(`Holed out in ${strokes}. ${aceLabel}.${hookMsg}${focusMsg}`);
     } else {
       const t = hole.grid[actualLanding.y][actualLanding.x];
-      const tname = ['the rough','the fairway','a sand trap','water','a tree','the green'][t] || 'the rough';
+      const tname = ['the rough','the fairway','a sand trap','water','a tree','the green','a rock'][t] || 'the rough';
       setStatusMsg(`${hookMsg ? hookMsg.trim() + ' ' : ''}${bounceMsg ? bounceMsg.trim() + ' ' : ''}Ball lands in ${tname}${slopePath.length ? ' and rolls down a slope' : ''}.`);
     }
   };
@@ -381,6 +571,8 @@ function App() {
     setSeed(s => s + Math.floor(Math.random() * 9000) + 100);
     setHoleIdx(0);
     setHoleScores([]);
+    setRoundLog([]);
+    setFocus(customCourse?.startingFocus ?? 0);
   };
 
   const totalAvail = mulligansMax;
@@ -414,14 +606,18 @@ function App() {
         <div className="course-meta">
           <div className="label">Course</div>
           <div className="name">{courseName}</div>
-          <div className="coords">{`Lat ${(38 + (seed % 7) + (seed % 100) / 100).toFixed(3)}°N · Long ${(94 + (seed % 11) + (seed % 100) / 100).toFixed(3)}°W`}</div>
+          <div className="coords">{customCourse ? 'Custom Course' : `Lat ${(38 + (seed % 7) + (seed % 100) / 100).toFixed(3)}°N · Long ${(94 + (seed % 11) + (seed % 100) / 100).toFixed(3)}°W`}</div>
+          <div className="topbar-actions">
+            <button className="topbar-btn" onClick={newCourse}>New Course</button>
+            <a href="#creator" className="topbar-btn">Creator</a>
+          </div>
         </div>
       </header>
 
       <div className="hole-strip">
         <div className="cell">
-          <span className="k">Hole</span>
-          <span className="v">{String(holeIdx + 1).padStart(2,'0')} <span style={{ color: 'var(--ink-mute)', fontSize: 14 }}>/ 09</span></span>
+          <span className="k">{hole.name || 'Hole'}</span>
+          <span className="v">{String(holeIdx + 1).padStart(2,'0')} <span className="v-sub">/ 09</span></span>
         </div>
         <div className="cell">
           <span className="k">Par</span>
@@ -429,14 +625,18 @@ function App() {
         </div>
         <div className="cell">
           <span className="k">Strokes</span>
-          <span className="v mono">{shots.length}</span>
+          <span className="v">{shots.length}</span>
         </div>
         <div className="cell">
           <span className="k">Lie</span>
-          <span className="v" style={{ fontSize: 17 }}>{['Rough','Fairway','Sand','—','—','Green'][ballTerrain] || 'Rough'}</span>
+          <span className="v v-text">{['Rough','Fairway','Sand','—','—','Green','Rock'][ballTerrain] || 'Rough'}</span>
+        </div>
+        <div className="cell">
+          <span className="k">{focus < 0 ? 'Frustrated' : 'Focus'}</span>
+          <span className={`v ${focus < 0 ? 'v-neg' : focus > 0 ? 'v-pos' : ''}`}>{focus}</span>
         </div>
         <div className="cell grow">
-          <span className="k">Round Total</span>
+          <span className="k">Total</span>
           <span className="v score-pip">
             <span>{playedTotal || '—'}</span>
             {holeScores.filter(Boolean).length > 0 && (
@@ -446,14 +646,13 @@ function App() {
             )}
           </span>
         </div>
-        <div className="cell">
-          <button className="btn ghost" onClick={prevHole} disabled={holeIdx === 0}>‹ Prev</button>
-        </div>
-        <div className="cell">
-          <button className="btn ghost" onClick={nextHole} disabled={holeIdx === 8}>Next ›</button>
-        </div>
-        <div className="cell">
-          <button className="btn" onClick={newCourse}>New Course</button>
+        <div className="cell-nav-row">
+          <div className="cell">
+            <button className="btn ghost" onClick={prevHole} disabled={holeIdx === 0}>‹ Prev</button>
+          </div>
+          <div className="cell">
+            <button className="btn ghost" onClick={nextHole} disabled={holeIdx === 8}>Next ›</button>
+          </div>
         </div>
       </div>
 
@@ -471,9 +670,9 @@ function App() {
             hovered={hoverCell}
             showHints={tweaks.showHints}
             aiming={aiming}
-            pickupFound={pickupFound}
+            distanceRange={club && club !== 'putter' && die == null ? distanceRange : null}
           />
-          <div className="card" style={{ marginTop: 14 }}>
+          <div className="card legend-card" style={{ marginTop: 14 }}>
             <div className="card-header">
               <h3>Legend</h3>
               <span style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.18em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>Terrain key</span>
@@ -484,6 +683,7 @@ function App() {
               <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--sand)' }} /> Sand — −1 (Woods/Driver)</div>
               <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--water)' }} /> Water — cannot land</div>
               <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--tree)' }} /> Trees — cannot land or pass</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--rock)' }} /> Rock — ricochet random dir</div>
               <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--green)' }} /> Green — putt to finish</div>
             </div>
           </div>
@@ -495,12 +695,12 @@ function App() {
               <h3>Club & Aim</h3>
               <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--ink-3)', letterSpacing: '0.12em' }}>
                 {fromFairway ? 'fairway' : fromSand ? 'sand' : 'rough'}
-                {hasPickup && !usePickupActive && ' · +1 ready'}
-                {usePickupActive && ' · +1 active'}
+                {useFocusActive && ' · focus +1'}
+                {frustration < 0 && ` · ${frustration} frustrated`}
               </span>
             </div>
 
-            {plannedDistance >= 2 && (
+            {plannedDistance >= 2 && club !== 'putter' && (
               <div style={{ padding: '8px 16px 0' }}>
                 <div className="hook-toggle">
                   <button className={hook === 'left' ? 'active' : ''} onClick={() => setHook(hook === 'left' ? null : 'left')} disabled={!aiming || holeComplete}>
@@ -529,13 +729,25 @@ function App() {
               disabled={!aiming || holeComplete}
               hintCells={hintCells}
               centerContent={
-                !club ? (
+                holeComplete ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>
+                    <div style={{ fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 500, lineHeight: 1 }}>
+                      {shots.length}
+                    </div>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.15em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>
+                      strokes
+                    </div>
+                    <button className="btn primary" style={{ padding: '8px 16px', fontSize: 11 }} onClick={nextHole} disabled={holeIdx === 8}>
+                      {holeIdx === 8 ? 'Round Done' : `Hole ${holeIdx + 2} →`}
+                    </button>
+                  </div>
+                ) : !club ? (
                   <div className="clubs-compact">
-                    {CLUB_ORDER.map(key => {
+                    {CLUB_ORDER.map((key, i) => {
                       const spec = CLUBS[key];
                       const distLabel = spec.fixed != null ? String(spec.fixed) : `d${spec.die}`;
                       return (
-                        <button key={key} className="club-compact" disabled={holeComplete} onClick={() => selectClub(key)}>
+                        <button key={key} className="club-compact" onClick={() => selectClub(key)}>
                           <span className="club-compact-dist">{distLabel}</span>
                           <span className="club-compact-name">{spec.label}</span>
                         </button>
@@ -548,6 +760,12 @@ function App() {
                     <div style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.12em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>
                       {rolling ? 'rolling...' : `tap to roll d${clubSpec.die}`}
                     </div>
+                    {clubSpec.terrainMod && fromSand && (
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 9, fontWeight: 600, color: 'oklch(0.55 0.18 25)' }}>−1 sand</div>
+                    )}
+                    {clubSpec.terrainMod && fromFairway && (
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 9, fontWeight: 600, color: 'oklch(0.5 0.13 145)' }}>+1 fairway</div>
+                    )}
                     <button className="btn ghost" style={{ padding: '3px 8px', fontSize: 9 }} onClick={() => { setClub(null); setDie(null); setAimingDir(null); }}>
                       ← Back
                     </button>
@@ -558,37 +776,37 @@ function App() {
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.15em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>Distance</div>
                       <div style={{ fontFamily: 'var(--serif)', fontSize: 24, fontWeight: 500, lineHeight: 1 }}>{plannedDistance}</div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--ink-2)' }}>
-                        {clubSpec.terrainMod && fromFairway && <span className="plus">+1 </span>}
-                        {clubSpec.terrainMod && fromSand && <span className="minus">−1 </span>}
-                        {usePickupActive && <span className="plus">+1 </span>}
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 9 }}>
+                        {clubSpec.terrainMod && fromFairway && <span style={{ color: 'oklch(0.5 0.13 145)', fontWeight: 600 }}>+1 fairway </span>}
+                        {clubSpec.terrainMod && fromSand && <span style={{ color: 'oklch(0.55 0.18 25)', fontWeight: 600 }}>-1 sand </span>}
+                        {useFocusActive && <span style={{ color: 'oklch(0.5 0.13 145)', fontWeight: 600 }}>+1 focus </span>}
+                        {frustration < 0 && <span style={{ color: 'oklch(0.55 0.18 25)', fontWeight: 600 }}>{frustration} frustrated </span>}
                       </div>
                     </div>
                     {canReroll && (
                       <button className="btn ghost" style={{ padding: '3px 8px', fontSize: 9 }} onClick={rerollDie}>Re-roll</button>
                     )}
-                    {hasPickup && (
-                      <button className={`btn ${usePickupActive ? 'primary' : 'ghost'}`}
-                        style={usePickupActive ? { padding: '3px 8px', fontSize: 9, background: 'oklch(0.55 0.13 145)', borderColor: 'oklch(0.55 0.13 145)' } : { padding: '3px 8px', fontSize: 9 }}
-                        onClick={() => setUsePickupActive(!usePickupActive)}>
-                        {usePickupActive ? '+1 On' : 'Use +1'}
-                      </button>
-                    )}
+                    <button className={`btn ${useFocusActive ? 'primary' : 'ghost'}`}
+                      style={useFocusActive ? { padding: '3px 8px', fontSize: 9, background: 'oklch(0.55 0.13 145)', borderColor: 'oklch(0.55 0.13 145)' } : { padding: '3px 8px', fontSize: 9 }}
+                      disabled={!useFocusActive && focus <= -2}
+                      onClick={() => setUseFocusActive(!useFocusActive)}>
+                      {useFocusActive ? 'Focus On (+1)' : focus <= -2 ? 'Max Frustrated' : `Use Focus (${focus})`}
+                    </button>
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.15em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>{clubSpec.label}</div>
                       <div style={{ fontFamily: 'var(--serif)', fontSize: 32, fontWeight: 500, lineHeight: 1 }}>{plannedDistance}</div>
-                      {usePickupActive && <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'oklch(0.55 0.13 145)' }}>+1</div>}
+                      {useFocusActive && <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'oklch(0.55 0.13 145)' }}>+1 focus</div>}
+                      {frustration < 0 && <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'oklch(0.55 0.18 25)' }}>{frustration} frustrated</div>}
                     </div>
-                    {hasPickup && (
-                      <button className={`btn ${usePickupActive ? 'primary' : 'ghost'}`}
-                        style={usePickupActive ? { padding: '3px 8px', fontSize: 9, background: 'oklch(0.55 0.13 145)', borderColor: 'oklch(0.55 0.13 145)' } : { padding: '3px 8px', fontSize: 9 }}
-                        onClick={() => setUsePickupActive(!usePickupActive)}>
-                        {usePickupActive ? '+1 On' : 'Use +1'}
-                      </button>
-                    )}
+                    <button className={`btn ${useFocusActive ? 'primary' : 'ghost'}`}
+                      style={useFocusActive ? { padding: '3px 8px', fontSize: 9, background: 'oklch(0.55 0.13 145)', borderColor: 'oklch(0.55 0.13 145)' } : { padding: '3px 8px', fontSize: 9 }}
+                      disabled={!useFocusActive && focus <= -2}
+                      onClick={() => setUseFocusActive(!useFocusActive)}>
+                      {useFocusActive ? 'Focus On (+1)' : focus <= -2 ? 'Max Frustrated' : `Use Focus (${focus})`}
+                    </button>
                     <button className="btn ghost" style={{ padding: '3px 8px', fontSize: 9 }} onClick={() => { setClub(null); setDie(null); setAimingDir(null); }}>
                       ← Back
                     </button>
@@ -609,6 +827,34 @@ function App() {
                 Pick a club to begin
               </div>
             )}
+            <div style={{ position: 'relative' }}>
+              <button className="hotkey-info-btn" onClick={() => setShowHotkeys(!showHotkeys)}
+                      title="Keyboard shortcuts">?</button>
+              {showHotkeys && (
+                <div className="hotkey-panel">
+                  <div className="hotkey-title">Numpad Controls</div>
+                  <div className="numpad-visual">
+                    <div className="numpad-main">
+                      <kbd className="nk">NW<b>7</b></kbd><kbd className="nk">N<b>8</b></kbd><kbd className="nk">NE<b>9</b></kbd>
+                      <kbd className="nk">W<b>4</b></kbd><kbd className="nk nk-accent">OK<b>5</b></kbd><kbd className="nk">E<b>6</b></kbd>
+                      <kbd className="nk">SW<b>1</b></kbd><kbd className="nk">S<b>2</b></kbd><kbd className="nk">SE<b>3</b></kbd>
+                      <kbd className="nk nk-wide">back<b>0</b></kbd><kbd className="nk">fcs<b>.</b></kbd>
+                    </div>
+                    <div className="numpad-side">
+                      <kbd className="nk nk-sm">mul<b>*</b></kbd>
+                      <kbd className="nk nk-sm">hk L<b>−</b></kbd>
+                      <kbd className="nk nk-sm">hk R<b>+</b></kbd>
+                      <kbd className="nk nk-sm nk-tall nk-accent">GO<b>↵</b></kbd>
+                    </div>
+                  </div>
+                  <div className="hotkey-section" style={{ marginTop: 8 }}>Club select (no club)</div>
+                  <div className="numpad-clubs">
+                    <kbd className="nk nk-club">DRV<b>4</b></kbd><kbd className="nk nk-club">WDS<b>5</b></kbd>
+                    <kbd className="nk nk-club">WDG<b>1</b></kbd><kbd className="nk nk-club">PUT<b>2</b></kbd>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="card">
@@ -672,18 +918,54 @@ function App() {
             </div>
           </div>
 
-          {holeComplete && (
-            <div className="card" style={{ borderColor: 'var(--ink)' }}>
-              <div className="card-header"><h3>Hole Complete</h3></div>
-              <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ fontFamily: 'var(--serif)', fontSize: 24, lineHeight: 1.1 }}>
-                  Holed out in <strong>{shots.length}</strong>.
-                </div>
-                <div className="btn-row">
-                  <button className="btn primary full" onClick={nextHole} disabled={holeIdx === 8}>
-                    {holeIdx === 8 ? 'Round complete' : `Next: Hole ${holeIdx + 2} →`}
-                  </button>
-                </div>
+          <div className="card legend-card-mobile" style={{ display: 'none' }}>
+            <div className="card-header">
+              <h3>Legend</h3>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.18em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>Terrain key</span>
+            </div>
+            <div className="legend">
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--rough)' }} /> Rough — no modifier</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--fairway)' }} /> Fairway — +1 (Woods/Driver)</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--sand)' }} /> Sand — −1 (Woods/Driver)</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--water)' }} /> Water — cannot land</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--tree)' }} /> Trees — cannot land or pass</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--rock)' }} /> Rock — ricochet random dir</div>
+              <div className="legend-item"><span className="legend-swatch" style={{ background: 'var(--green)' }} /> Green — putt to finish</div>
+            </div>
+          </div>
+
+          {roundLog.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <h3>Round Log</h3>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--ink-3)', letterSpacing: '0.12em' }}>{roundLog.length} entries</span>
+              </div>
+              <div className="round-log">
+                {roundLog.map((e, i) => (
+                  <div key={i} className="log-entry">
+                    <span className="log-hole">H{e.hole}</span>
+                    {e.type === 'hit' && (
+                      <span className="log-detail">
+                        <strong>#{e.stroke}</strong> {e.club}
+                        {e.die != null && <> d{e.dieSize}→{e.die}</>}
+                        {' '}= {e.distance} {e.dir}
+                        {e.hook && <> hook {e.hook} ({e.hookAmount})</>}
+                        {e.mods && <span className="log-mods"> [{e.mods.join(', ')}]</span>}
+                        {e.bounced && <span className="log-hazard"> hit tree</span>}
+                        {e.hazard === 'sand' && <span className="log-hazard"> in sand</span>}
+                        {e.hazard === 'water' && <span className="log-hazard"> in water</span>}
+                        {e.hazard === 'rock' && <span className="log-hazard"> ricochet</span>}
+                        {e.result === 'holed out' && <span className="log-cup"> ⚑</span>}
+                      </span>
+                    )}
+                    {e.type === 'mulligan' && (
+                      <span className="log-detail log-special">Mulligan</span>
+                    )}
+                    {e.type === 'reroll' && (
+                      <span className="log-detail log-special">Re-roll ({e.club}, was {e.prevRoll})</span>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -911,14 +1193,35 @@ function TweaksPanel({ tweaks, setTweak }) {
               </button>
             ))}
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span>Bonus club pickup</span>
-            <input type="checkbox" checked={tweaks.bigfootEnabled} onChange={e => setTweak('bigfootEnabled', e.target.checked)} />
-          </label>
         </div>
       )}
     </>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+function Router() {
+  const [route, setRoute] = useState(location.hash || '');
+  useEffect(() => {
+    const handler = () => setRoute(location.hash || '');
+    window.addEventListener('hashchange', handler);
+    return () => window.removeEventListener('hashchange', handler);
+  }, []);
+
+  if (route === '#creator') return <window.CreatorApp />;
+
+  let customCourse = null;
+  if (window._customCourseData) {
+    customCourse = window._customCourseData;
+  }
+  const match = route.match(/[?&]c=([^&]+)/);
+  if (match) {
+    try { customCourse = window.importCourse(match[1]); } catch(e) {}
+  }
+
+  return <App customCourse={customCourse} />;
+}
+
+window.Die = Die;
+window.Compass = Compass;
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Router />);

@@ -239,11 +239,39 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
     }
   }
 
+  // Rocks — 2-4 scattered on rough
+  const rockCount = 2 + Math.floor(rand() * 3);
+  for (let ri = 0; ri < rockCount; ri++) {
+    let ra = 0;
+    while (ra++ < 30) {
+      const rx = 2 + Math.floor(rand() * (w - 4));
+      const ry = 1 + Math.floor(rand() * (h - 2));
+      if (grid[ry][rx] !== 0) continue;
+      if (Math.hypot(rx - tee.x, ry - tee.y) < 3) continue;
+      if (Math.hypot(rx - cup.x, ry - cup.y) < 3) continue;
+      grid[ry][rx] = 6;
+      break;
+    }
+  }
+
   const slopes = [];
-  const slopeCount = 2 + Math.floor(rand() * 3);
+  const slopeGroupCount = 2 + Math.floor(rand() * 3);
   const slopeDirs = ['N','E','S','W','NE','SE','SW','NW'];
+
+  function perpOffsets(dir, width) {
+    const v = dirVectors[dir];
+    const px = -v.dy, py = v.dx;
+    const offsets = [{ dx: 0, dy: 0 }];
+    for (let i = 1; i <= Math.floor(width / 2); i++) {
+      offsets.push({ dx: px * i, dy: py * i });
+      offsets.push({ dx: -px * i, dy: -py * i });
+    }
+    return offsets;
+  }
+
   let attempts = 0;
-  while (slopes.length < slopeCount && attempts++ < 80) {
+  let groupsPlaced = 0;
+  while (groupsPlaced < slopeGroupCount && attempts++ < 80) {
     const x = 2 + Math.floor(rand() * (w - 4));
     const y = 1 + Math.floor(rand() * (h - 2));
     if (!(grid[y][x] === 0 || grid[y][x] === 1)) continue;
@@ -254,7 +282,20 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
     const v = dirVectors[dir];
     const nx = x + v.dx, ny = y + v.dy;
     if (inBounds(grid, nx, ny) && grid[ny][nx] === 3) continue;
-    slopes.push({ x, y, dir });
+    const width = rand() < 0.4 ? 1 : rand() < 0.7 ? 2 : 3;
+    const offsets = perpOffsets(dir, width);
+    offsets.forEach(off => {
+      const sx = x + off.dx, sy = y + off.dy;
+      if (!inBounds(grid, sx, sy)) return;
+      if (grid[sy][sx] !== 0 && grid[sy][sx] !== 1) return;
+      if (sx === tee.x && sy === tee.y) return;
+      if (sx === cup.x && sy === cup.y) return;
+      if (slopes.find(s => s.x === sx && s.y === sy)) return;
+      const nsx = sx + v.dx, nsy = sy + v.dy;
+      if (inBounds(grid, nsx, nsy) && grid[nsy][nsx] === 3) return;
+      slopes.push({ x: sx, y: sy, dir });
+    });
+    groupsPlaced++;
   }
 
   // Green slopes — 2-4 slopes on green cells around the cup
@@ -301,33 +342,27 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
       dir = Object.entries(dirVectors).find(([,v]) => v.dx === sx && v.dy === sy)?.[0];
     }
     if (!dir) dir = slopeDirs[Math.floor(rand() * slopeDirs.length)];
-    // Don't slope into water
     const sv = dirVectors[dir];
     const snx = gc.x + sv.dx, sny = gc.y + sv.dy;
     if (inBounds(grid, snx, sny) && grid[sny][snx] === 3) continue;
-    slopes.push({ x: gc.x, y: gc.y, dir });
+    const gWidth = rand() < 0.5 ? 1 : 2;
+    const gOffsets = perpOffsets(dir, gWidth);
+    gOffsets.forEach(off => {
+      const gsx = gc.x + off.dx, gsy = gc.y + off.dy;
+      if (!inBounds(grid, gsx, gsy)) return;
+      if (grid[gsy][gsx] !== 5) return;
+      if (gsx === cup.x && gsy === cup.y) return;
+      if (slopes.find(s => s.x === gsx && s.y === gsy)) return;
+      slopes.push({ x: gsx, y: gsy, dir });
+    });
     placed++;
-  }
-
-  let bigfoot = null;
-  if (rand() < 0.34) {
-    let a = 0;
-    while (a++ < 50) {
-      const x = 1 + Math.floor(rand() * (w - 2));
-      const y = 1 + Math.floor(rand() * (h - 2));
-      if (grid[y][x] === 4 || grid[y][x] === 0) {
-        if (Math.hypot(x - tee.x, y - tee.y) < 4) continue;
-        bigfoot = { x, y };
-        break;
-      }
-    }
   }
 
   grid[tee.y][tee.x] = 1;
   grid[cup.y][cup.x] = 5;
 
   return {
-    w, h, grid, slopes, tee, cup, bigfoot,
+    w, h, grid, slopes, tee, cup, bigfoot: null,
     par: 6,
     seed,
   };
@@ -367,6 +402,9 @@ function legalShotPath(hole, from, dir, distance, { fromFairway, overTrees }) {
     if (t === 4 && isLanding) {
       const bp = bounceBack(hole, path, from);
       return { ok: true, path, landingTerrain: hole.grid[bp.y][bp.x], bounced: bp };
+    }
+    if (t === 6 && isLanding) {
+      return { ok: true, path, landingTerrain: 6, ricochet: { x, y } };
     }
     if (t === 3 && isLanding) {
       return { ok: false, blockedReason: 'water_landing', path };
@@ -457,6 +495,9 @@ function hookShotPath(hole, from, dir, distance, hook, { fromFairway, overTrees 
       const bp = bounceBack(hole, path, from);
       return { ok: true, path, landingTerrain: hole.grid[bp.y][bp.x], bendAt: straightSteps, bounced: bp };
     }
+    if (t === 6 && isLanding) {
+      return { ok: true, path, landingTerrain: 6, bendAt: straightSteps, ricochet: { x, y } };
+    }
     if (t === 3 && isLanding) {
       return { ok: false, blockedReason: 'water_landing', path, bendAt: straightSteps };
     }
@@ -532,6 +573,7 @@ function validateHookAtAmount(hole, from, dir, distance, hook, hookAmount, { fro
         const bp = bounceBack(hole, path, from);
         return { ok: true, path, landingTerrain: hole.grid[bp.y][bp.x], bounced: bp };
       }
+      if (t === 6 && isLanding) return { ok: true, path, landingTerrain: 6, ricochet: { x, y } };
       if (t === 3 && isLanding) return { ok: false, blockedReason: 'water_landing', path };
     }
   } else if (!hook || hookAmount === 0) {
@@ -540,10 +582,28 @@ function validateHookAtAmount(hole, from, dir, distance, hook, hookAmount, { fro
       const bp = bounceBack(hole, path, from);
       return { ok: true, path, landingTerrain: hole.grid[bp.y][bp.x], bounced: bp };
     }
+    if (t === 6) return { ok: true, path, landingTerrain: 6, ricochet: { x, y } };
     if (t === 3) return { ok: false, blockedReason: 'water_landing', path };
   }
 
   return { ok: true, path, landingTerrain: hole.grid[y]?.[x] };
+}
+
+function waterDrop(hole, waterPos) {
+  const dir = waterPos.x >= hole.tee.x ? -1 : 1;
+  for (let x = waterPos.x + dir; x >= 0 && x < hole.w; x += dir) {
+    const t = hole.grid[waterPos.y][x];
+    if (t !== 2 && t !== 3 && t !== 4 && t !== 6) return { x, y: waterPos.y };
+  }
+  for (let dy = -1; dy <= 1; dy += 2) {
+    const ny = waterPos.y + dy;
+    if (ny < 0 || ny >= hole.h) continue;
+    for (let x = waterPos.x + dir; x >= 0 && x < hole.w; x += dir) {
+      const t = hole.grid[ny][x];
+      if (t !== 2 && t !== 3 && t !== 4 && t !== 6) return { x, y: ny };
+    }
+  }
+  return hole.tee;
 }
 
 function pointToDirDist(from, to) {
@@ -561,6 +621,6 @@ function pointToDirDist(from, to) {
 window.DiceGolf = {
   generateHole, legalShotPath, hookShotPath, hookLanding, hookPossibleLandings,
   hookMaxSteps, validateHookAtAmount, shiftDir,
-  applySlopes, pointToDirDist,
+  applySlopes, waterDrop, pointToDirDist,
   terrainAt, slopeAt, dirVectors, dirNames, inBounds,
 };

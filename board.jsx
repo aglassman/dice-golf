@@ -11,6 +11,7 @@ const TERRAIN_FILL = {
   3: 'var(--water)',
   4: 'transparent',
   5: 'var(--green)',
+  6: 'transparent',
 };
 
 const ROUNDED_TERRAINS = new Set([1, 2, 3, 5]); // fairway, sand, water, green
@@ -32,8 +33,8 @@ function roundedCellPath(px, py, size, rTL, rTR, rBR, rBL) {
 
 function Board({
   hole, ball, ghost, hintCells, shots, slopeAnim,
-  cell = 36, onCellClick, onCellHover, hovered,
-  showHints = true, aiming = false, pickupFound = false,
+  cell = 36, onCellClick, onCellHover, onCellMouseDown, onCellMouseUp, hovered,
+  showHints = true, aiming = false, distanceRange,
 }) {
   const W = hole.w * cell;
   const H = hole.h * cell;
@@ -139,10 +140,9 @@ function Board({
     return () => { if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = null; } };
   }, [shots.length, cell]);
 
-  function isBackground(x, y) {
-    if (x < 0 || y < 0 || y >= hole.h || x >= hole.w) return true;
-    const t = hole.grid[y][x];
-    return t === 0 || t === 4; // rough or tree
+  function terrainAt(x, y) {
+    if (x < 0 || y < 0 || y >= hole.h || x >= hole.w) return -1;
+    return hole.grid[y][x];
   }
 
   // SVG grid lines (drawn in SVG so they align with the terrain)
@@ -167,15 +167,41 @@ function Board({
       const px = x * cell, py = y * cell;
 
       if (ROUNDED_TERRAINS.has(t)) {
-        const topBg = isBackground(x, y - 1);
-        const bottomBg = isBackground(x, y + 1);
-        const leftBg = isBackground(x - 1, y);
-        const rightBg = isBackground(x + 1, y);
+        const topT = terrainAt(x, y - 1);
+        const bottomT = terrainAt(x, y + 1);
+        const leftT = terrainAt(x - 1, y);
+        const rightT = terrainAt(x + 1, y);
 
-        const rTL = (topBg && leftBg) ? R : 0;
-        const rTR = (topBg && rightBg) ? R : 0;
-        const rBR = (bottomBg && rightBg) ? R : 0;
-        const rBL = (bottomBg && leftBg) ? R : 0;
+        const isBg = (n) => n === -1 || n === 0 || n === 4 || n === 6;
+        const waterOnly = t === 3;
+        const topDiff = waterOnly ? isBg(topT) : topT !== t;
+        const bottomDiff = waterOnly ? isBg(bottomT) : bottomT !== t;
+        const leftDiff = waterOnly ? isBg(leftT) : leftT !== t;
+        const rightDiff = waterOnly ? isBg(rightT) : rightT !== t;
+
+        const rTL = (topDiff && leftDiff) ? R : 0;
+        const rTR = (topDiff && rightDiff) ? R : 0;
+        const rBR = (bottomDiff && rightDiff) ? R : 0;
+        const rBL = (bottomDiff && leftDiff) ? R : 0;
+
+        function cornerFill(cornerR, cx, cy, n1, n2) {
+          if (!cornerR) return null;
+          const fill = ROUNDED_TERRAINS.has(n1) ? TERRAIN_FILL[n1]
+                     : ROUNDED_TERRAINS.has(n2) ? TERRAIN_FILL[n2] : null;
+          if (!fill || fill === 'transparent') return null;
+          return <rect x={cx} y={cy} width={R} height={R} fill={fill} />;
+        }
+
+        const fills = [
+          cornerFill(rTL, px, py, topT, leftT),
+          cornerFill(rTR, px + cell - R, py, topT, rightT),
+          cornerFill(rBR, px + cell - R, py + cell - R, bottomT, rightT),
+          cornerFill(rBL, px, py + cell - R, bottomT, leftT),
+        ].filter(Boolean);
+
+        if (fills.length) {
+          cells.push(<React.Fragment key={`cf-${x}-${y}`}>{fills}</React.Fragment>);
+        }
 
         cells.push(
           <path
@@ -317,6 +343,55 @@ function Board({
             {canopy}
           </g>
         );
+      }
+    }
+  }
+
+  const rocks = [];
+  for (let y = 0; y < hole.h; y++) {
+    for (let x = 0; x < hole.w; x++) {
+      if (hole.grid[y][x] === 6) {
+        const cx = x * cell + cell / 2;
+        const cy = y * cell + cell / 2;
+        const s = (x * 41 + y * 67) % 1000;
+        const variant = s % 3;
+        const rot = (s % 360) - 180;
+        const scale = 0.75 + (s % 30) / 100;
+        const r = cell * 0.26 * scale;
+        const lum1 = 0.64 + (s % 12) / 100;
+        const lum2 = lum1 + 0.08;
+
+        if (variant === 0) {
+          rocks.push(
+            <g key={`rk-${x}-${y}`} transform={`rotate(${rot} ${cx} ${cy})`}>
+              <polygon points={`${cx - r * 0.9},${cy + r * 0.5} ${cx - r * 0.4},${cy - r * 0.6} ${cx + r * 0.6},${cy - r * 0.5} ${cx + r * 0.95},${cy + r * 0.15} ${cx + r * 0.3},${cy + r * 0.65}`}
+                       fill={`oklch(${lum1} 0.018 240)`} stroke="var(--ink-2)" strokeWidth="1" strokeLinejoin="round" />
+              <line x1={cx - r * 0.2} y1={cy - r * 0.3} x2={cx + r * 0.4} y2={cy + r * 0.1}
+                    stroke={`oklch(${lum1 - 0.08} 0.01 240)`} strokeWidth="0.7" opacity="0.5" />
+            </g>
+          );
+        } else if (variant === 1) {
+          rocks.push(
+            <g key={`rk-${x}-${y}`} transform={`rotate(${rot} ${cx} ${cy})`}>
+              <polygon points={`${cx - r * 0.7},${cy + r * 0.6} ${cx - r * 0.85},${cy - r * 0.2} ${cx - r * 0.1},${cy - r * 0.65} ${cx + r * 0.8},${cy - r * 0.35} ${cx + r * 0.75},${cy + r * 0.45}`}
+                       fill={`oklch(${lum1} 0.015 248)`} stroke="var(--ink-2)" strokeWidth="1" strokeLinejoin="round" />
+              <line x1={cx - r * 0.5} y1={cy + r * 0.1} x2={cx + r * 0.3} y2={cy - r * 0.25}
+                    stroke={`oklch(${lum1 - 0.06} 0.012 248)`} strokeWidth="0.6" opacity="0.45" />
+              <line x1={cx + r * 0.1} y1={cy - r * 0.5} x2={cx + r * 0.5} y2={cy + r * 0.2}
+                    stroke={`oklch(${lum1 - 0.06} 0.012 248)`} strokeWidth="0.5" opacity="0.35" />
+            </g>
+          );
+        } else {
+          const off = r * 0.35;
+          rocks.push(
+            <g key={`rk-${x}-${y}`} transform={`rotate(${rot} ${cx} ${cy})`}>
+              <polygon points={`${cx - off - r * 0.5},${cy + r * 0.35} ${cx - off - r * 0.25},${cy - r * 0.4} ${cx - off + r * 0.4},${cy - r * 0.35} ${cx - off + r * 0.55},${cy + r * 0.3}`}
+                       fill={`oklch(${lum1} 0.012 255)`} stroke="var(--ink-2)" strokeWidth="0.9" strokeLinejoin="round" />
+              <polygon points={`${cx + off - r * 0.4},${cy + r * 0.45} ${cx + off - r * 0.3},${cy - r * 0.25} ${cx + off + r * 0.5},${cy - r * 0.4} ${cx + off + r * 0.45},${cy + r * 0.35}`}
+                       fill={`oklch(${lum1 + 0.03} 0.015 245)`} stroke="var(--ink-2)" strokeWidth="0.9" strokeLinejoin="round" />
+            </g>
+          );
+        }
       }
     }
   }
@@ -471,17 +546,6 @@ function Board({
     </g>
   );
 
-  let pickupMark = null;
-  if (hole.bigfoot && !pickupFound) {
-    const bx = hole.bigfoot.x * cell + cell / 2;
-    const by = hole.bigfoot.y * cell + cell / 2;
-    pickupMark = (
-      <g transform={`translate(${bx} ${by})`}>
-        <circle r="10" fill="oklch(0.55 0.13 145 / 0.15)" stroke="oklch(0.55 0.13 145)" strokeWidth="1.2" strokeDasharray="2 2" />
-        <text textAnchor="middle" dominantBaseline="central" fontSize="12" fontFamily="var(--mono)" fontWeight="600" fill="oklch(0.55 0.13 145)">+1</text>
-      </g>
-    );
-  }
 
   const ballX = animBall ? animBall[0] : ball.x * cell + cell / 2;
   const ballY = animBall ? animBall[1] : ball.y * cell + cell / 2;
@@ -509,6 +573,8 @@ function Board({
             x={x * cell} y={y * cell} width={cell} height={cell}
             fill="transparent"
             onMouseEnter={() => onCellHover && onCellHover({ x, y })}
+            onMouseDown={() => onCellMouseDown && onCellMouseDown({ x, y })}
+            onMouseUp={() => onCellMouseUp && onCellMouseUp({ x, y })}
             onClick={() => onCellClick && onCellClick({ x, y })}
             style={{ cursor: 'crosshair' }} />
         ))
@@ -531,14 +597,35 @@ function Board({
         {sandStipples}
         {greenRings}
         {trees}
+        {rocks}
         {slopes}
+        {distanceRange && !animBall && (() => {
+          const bx = ball.x * cell + cell / 2;
+          const by = ball.y * cell + cell / 2;
+          const rings = [];
+          if (distanceRange[0] === distanceRange[1]) {
+            rings.push(
+              <circle key="range-0" cx={bx} cy={by} r={distanceRange[0] * cell}
+                      fill="none" stroke="var(--ink)" strokeWidth="1" strokeDasharray="3 4" opacity="0.2" />
+            );
+          } else {
+            rings.push(
+              <circle key="range-min" cx={bx} cy={by} r={distanceRange[0] * cell}
+                      fill="none" stroke="var(--ink)" strokeWidth="0.8" strokeDasharray="2 4" opacity="0.15" />
+            );
+            rings.push(
+              <circle key="range-max" cx={bx} cy={by} r={distanceRange[1] * cell}
+                      fill="none" stroke="var(--ink)" strokeWidth="1" strokeDasharray="3 4" opacity="0.2" />
+            );
+          }
+          return rings;
+        })()}
         {hints}
         {shotLines}
         {shotMarks}
         {ghostEl}
         {teeMark}
         {flagMark}
-        {pickupMark}
         {ballEl}
         {bird && <Bird key={bird.t0} startX={bird.startX} startY={bird.startY} dx={bird.dx} dy={bird.dy} />}
         {hoverEl}
