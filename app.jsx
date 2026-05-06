@@ -67,6 +67,11 @@ function App({ customCourse }) {
   const [bigToast, setBigToast] = useState(null);
   const [statusMsg, setStatusMsg] = useState('Welcome to ' + pickName(1024) + '. Pick a club to tee off.');
   const [roundLog, setRoundLog] = useState([]);
+  const [playerName, setPlayerName] = useState(() => localStorage.getItem('dg-name') || 'Player 1');
+  const [otherScores, setOtherScores] = useState([]);
+  const [shareStr, setShareStr] = useState('');
+  const [shareImport, setShareImport] = useState('');
+  const [shareImportError, setShareImportError] = useState('');
 
   useEffect(() => {
     setBall(hole.tee);
@@ -77,7 +82,6 @@ function App({ customCourse }) {
     setAimingDir(null);
     setHook(null);
     setHoverCell(null);
-    setMulligansUsed(0);
     setUseFocusActive(false);
     setFocusUsedThisHole(false);
     setHoleComplete(false);
@@ -109,8 +113,10 @@ function App({ customCourse }) {
       if (!club) {
         const clubMap = { Numpad4: 0, Numpad5: 1, Numpad1: 2, Numpad2: 3 };
         if (clubMap[e.code] != null) {
+          const ck = CLUB_ORDER[clubMap[e.code]];
+          if (ck === 'driver' && !onTee) return;
           e.preventDefault();
-          selectClub(CLUB_ORDER[clubMap[e.code]]);
+          selectClub(ck);
           return;
         }
         return;
@@ -127,6 +133,7 @@ function App({ customCourse }) {
         }
         // Switch club
         if (pressedClub && pressedClub !== club) {
+          if (pressedClub === 'driver' && !onTee) return;
           e.preventDefault();
           selectClub(pressedClub);
           return;
@@ -180,14 +187,16 @@ function App({ customCourse }) {
           return;
         }
 
-        // Re-roll (Numpad0 when canReroll, otherwise back)
-        if (e.code === 'Numpad0' || e.code === 'Escape') {
+        // Re-roll (Numpad0 on tee only)
+        if (e.code === 'Numpad0' && canReroll) {
           e.preventDefault();
-          if (canReroll && e.code === 'Numpad0') {
-            rerollDie();
-          } else {
-            setClub(null); setDie(null); setAimingDir(null); setHook(null);
-          }
+          rerollDie();
+          return;
+        }
+        // Back for fixed-distance clubs (putter) — no die to protect
+        if ((e.code === 'Numpad0' || e.code === 'Escape') && clubSpec && clubSpec.fixed != null) {
+          e.preventDefault();
+          setClub(null); setDie(null); setAimingDir(null); setHook(null);
           return;
         }
       }
@@ -207,6 +216,7 @@ function App({ customCourse }) {
   const fromFairway = ballTerrain === 1 || ballTerrain === 5;
   const fromSand = ballTerrain === 2;
 
+  const onTee = shots.length === 0;
   const clubSpec = club ? CLUBS[club] : null;
 
   const frustration = focus < 0 ? focus : 0; // negative number
@@ -572,8 +582,67 @@ function App({ customCourse }) {
     setHoleIdx(0);
     setHoleScores([]);
     setRoundLog([]);
+    setMulligansUsed(0);
     setFocus(customCourse?.startingFocus ?? 0);
+    setOtherScores([]);
+    setShareStr('');
   };
+
+  const roundComplete = holeScores.filter(Boolean).length === 9;
+
+  function exportRound() {
+    const allHoles = Array.from({ length: 9 }, (_, i) =>
+      customCourse ? customCourse.holes[i] : generateHole(holeSeeds[i], { w: 22, h: 13 })
+    );
+    const data = {
+      v: 2,
+      type: 'round',
+      courseName,
+      seed: customCourse ? null : seed,
+      startingFocus: customCourse?.startingFocus ?? 0,
+      holes: allHoles.map(h => ({
+        grid: h.grid.map(r => r.join('')).join(''),
+        slopes: h.slopes.map(s => [s.x, s.y, window.DiceGolf.dirNames.indexOf(s.dir)]),
+        tee: [h.tee.x, h.tee.y],
+        cup: [h.cup.x, h.cup.y],
+        bigfoot: null,
+        par: h.par,
+        name: h.name || '',
+      })),
+      players: [
+        { name: playerName, scores: holeScores },
+        ...otherScores,
+      ],
+    };
+    return btoa(JSON.stringify(data));
+  }
+
+  function importRound(b64) {
+    const data = JSON.parse(atob(b64.trim()));
+    if (data.v !== 2 || data.type !== 'round') throw new Error('Not a shared round');
+    const holes = data.holes.map(h => {
+      const flat = h.grid.split('').map(Number);
+      const grid = [];
+      for (let y = 0; y < 13; y++) grid.push(flat.slice(y * 22, (y + 1) * 22));
+      return {
+        w: 22, h: 13, grid,
+        slopes: h.slopes.map(([x, y, di]) => ({ x, y, dir: window.DiceGolf.dirNames[di] })),
+        tee: { x: h.tee[0], y: h.tee[1] },
+        cup: { x: h.cup[0], y: h.cup[1] },
+        bigfoot: null,
+        par: h.par, seed: 0, name: h.name || '',
+      };
+    });
+    window._customCourseData = { name: data.courseName, holes, startingFocus: data.startingFocus ?? 0 };
+    setOtherScores(data.players || []);
+    setHoleScores([]);
+    setHoleIdx(0);
+    setRoundLog([]);
+    setMulligansUsed(0);
+    setFocus(data.startingFocus ?? 0);
+    setShareStr('');
+    location.hash = '#play';
+  }
 
   const totalAvail = mulligansMax;
   const mullRemaining = totalAvail - mulligansUsed;
@@ -589,7 +658,7 @@ function App({ customCourse }) {
 
   function clubNote(key) {
     const spec = CLUBS[key];
-    if (key === 'driver') return 'flies over trees';
+    if (key === 'driver') return 'tee only, over trees';
     if (key === 'woods') return fromFairway ? '+1, over trees' : fromSand ? '−1 sand' : 'standard';
     if (key === 'pitchingWedge') return 'no terrain mod';
     if (key === 'putter') return 'always 1';
@@ -747,7 +816,7 @@ function App({ customCourse }) {
                       const spec = CLUBS[key];
                       const distLabel = spec.fixed != null ? String(spec.fixed) : `d${spec.die}`;
                       return (
-                        <button key={key} className="club-compact" onClick={() => selectClub(key)}>
+                        <button key={key} className="club-compact" disabled={key === 'driver' && !onTee} onClick={() => selectClub(key)}>
                           <span className="club-compact-dist">{distLabel}</span>
                           <span className="club-compact-name">{spec.label}</span>
                         </button>
@@ -897,7 +966,7 @@ function App({ customCourse }) {
                     <td>54</td>
                   </tr>
                   <tr>
-                    <td className="label">Score</td>
+                    <td className="label">{playerName}</td>
                     {Array.from({ length: 9 }).map((_, i) => {
                       const s = holeScores[i];
                       const isCur = i === holeIdx;
@@ -909,12 +978,68 @@ function App({ customCourse }) {
                     })}
                     <td>{playedTotal || '—'}</td>
                   </tr>
+                  {otherScores.map((p, pi) => {
+                    const pTotal = p.scores.reduce((a, b) => a + (b || 0), 0);
+                    return (
+                      <tr key={pi} style={{ opacity: 0.6 }}>
+                        <td className="label">{p.name}</td>
+                        {Array.from({ length: 9 }).map((_, i) => (
+                          <td key={i} className={p.scores[i] ? 'played' : 'empty'}>
+                            {p.scores[i] || '·'}
+                          </td>
+                        ))}
+                        <td>{pTotal || '—'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
             <div className="statusline">
               <span className="blink" />
               <span>{statusMsg}</span>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <h3>Share</h3>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--ink-3)', letterSpacing: '0.12em' }}>
+                {roundComplete ? 'round complete' : 'in progress'}
+              </span>
+            </div>
+            <div style={{ padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em', flexShrink: 0 }}>Name</span>
+                <input type="text" value={playerName}
+                  onChange={e => { setPlayerName(e.target.value); localStorage.setItem('dg-name', e.target.value); }}
+                  style={{ flex: 1, fontFamily: 'var(--mono)', fontSize: 11, border: '1px solid var(--paper-line)', borderRadius: 4, padding: '3px 6px', background: 'var(--paper)', color: 'var(--ink)' }}
+                />
+              </div>
+              {roundComplete && (
+                <>
+                  <button className="btn primary full" onClick={() => setShareStr(exportRound())}>
+                    Export Round
+                  </button>
+                  {shareStr && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <textarea readOnly value={shareStr} onClick={e => e.target.select()}
+                        style={{ fontFamily: 'var(--mono)', fontSize: 9, padding: 6, borderRadius: 5, border: '1px solid var(--paper-line)', background: 'var(--paper-2)', resize: 'vertical', minHeight: 50, color: 'var(--ink)' }} />
+                      <button className="btn ghost" onClick={() => navigator.clipboard.writeText(shareStr)}>Copy</button>
+                    </div>
+                  )}
+                </>
+              )}
+              <div style={{ borderTop: '1px solid var(--paper-line)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <textarea placeholder="Paste a shared round..." value={shareImport}
+                  onChange={e => { setShareImport(e.target.value); setShareImportError(''); }}
+                  style={{ fontFamily: 'var(--mono)', fontSize: 9, padding: 6, borderRadius: 5, border: '1px solid var(--paper-line)', background: 'var(--paper-2)', resize: 'vertical', minHeight: 40, color: 'var(--ink)' }} />
+                <button className="btn ghost" disabled={!shareImport.trim()} onClick={() => {
+                  try { importRound(shareImport); setShareImport(''); setShareImportError(''); }
+                  catch(e) { setShareImportError('Invalid round data'); }
+                }}>Import Round</button>
+                {shareImportError && <span style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'oklch(0.55 0.18 25)' }}>{shareImportError}</span>}
+              </div>
             </div>
           </div>
 

@@ -44,18 +44,19 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
     ? { x: w - 2 - Math.floor(rand() * 2), y: 2 + Math.floor(rand() * (h - 4)) }
     : { x: 1 + Math.floor(rand() * 2), y: 2 + Math.floor(rand() * (h - 4)) };
 
-  // Dogleg fairway — stronger bends with 2-3 waypoints
-  const numWaypoints = 2 + Math.floor(rand() * 2); // 2 or 3 waypoints
+  // Dogleg fairway — always bends, 2-3 waypoints
+  const numWaypoints = 2 + Math.floor(rand() * 2);
   const ctrl = [tee];
   for (let wi = 1; wi <= numWaypoints; wi++) {
     const t = wi / (numWaypoints + 1);
     const baseX = tee.x + (cup.x - tee.x) * t;
     const baseY = tee.y + (cup.y - tee.y) * t;
-    // Perpendicular offset for dogleg — much stronger bends
     const perpX = -(cup.y - tee.y);
     const perpY = (cup.x - tee.x);
     const perpLen = Math.hypot(perpX, perpY) || 1;
-    const bendStr = (rand() - 0.5) * 0.55; // strong perpendicular bend
+    // Always bend — minimum 0.25 strength, alternating sides for S-curves
+    const sign = (wi % 2 === 0) ? 1 : -1;
+    const bendStr = sign * (0.25 + rand() * 0.4);
     ctrl.push({
       x: Math.round(Math.max(2, Math.min(w - 3, baseX + (perpX / perpLen) * Math.min(w, h) * bendStr))),
       y: Math.round(Math.max(2, Math.min(h - 3, baseY + (perpY / perpLen) * Math.min(w, h) * bendStr))),
@@ -88,8 +89,8 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
     paintFairway(ctrl[i].x, ctrl[i].y, ctrl[i+1].x, ctrl[i+1].y, 1);
   }
 
-  // Fairway crossings — 1-2 strips of water or sand that cut across the fairway
-  const crossingCount = 1 + Math.floor(rand() * 2);
+  // Fairway crossings — 2-3 strips of water or sand that cut across the fairway
+  const crossingCount = 2 + Math.floor(rand() * 2);
   for (let ci = 0; ci < crossingCount; ci++) {
     // Pick a point along the fairway path (avoid near tee and cup)
     const seg = 1 + Math.floor(rand() * (ctrl.length - 2)); // skip first/last segments
@@ -196,20 +197,20 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
     return false;
   }
 
-  // Water — 3-5 blobs, mostly near fairway
-  const waterCount = 3 + Math.floor(rand() * 3);
+  // Water — 4-7 blobs, mostly near fairway, bigger
+  const waterCount = 4 + Math.floor(rand() * 4);
   for (let i = 0; i < waterCount; i++) {
-    if (rand() < 0.7) placeBlobNearFairway(3, 1, 2, [5, 1]);
+    if (rand() < 0.75) placeBlobNearFairway(3, 1, 3, [5, 1]);
     else placeBlob(3, 1, 3, [5]);
   }
-  // Sand — 5-8 bunkers, heavily fairway-adjacent
-  const bunkerCount = 5 + Math.floor(rand() * 4);
+  // Sand — 6-10 bunkers, heavily fairway-adjacent, bigger
+  const bunkerCount = 6 + Math.floor(rand() * 5);
   for (let i = 0; i < bunkerCount; i++) {
-    if (rand() < 0.8) placeBlobNearFairway(2, 1, 2, [3, 5, 1]);
-    else placeBlob(2, 1, 2, [3, 5]);
+    if (rand() < 0.85) placeBlobNearFairway(2, 1, 3, [3, 5, 1]);
+    else placeBlob(2, 1, 3, [3, 5]);
   }
-  // Trees — 10-16 clusters lining the fairway
-  const treeCount = 10 + Math.floor(rand() * 7);
+  // Trees — 12-20 clusters lining the fairway
+  const treeCount = 12 + Math.floor(rand() * 9);
   for (let i = 0; i < treeCount; i++) {
     let attempts = 0;
     while (attempts++ < 40) {
@@ -239,13 +240,23 @@ function generateHole(seed, { w = 22, h = 14 } = {}) {
     }
   }
 
-  // Rocks — 2-4 scattered on rough
-  const rockCount = 2 + Math.floor(rand() * 3);
+  // Rocks — 3-6 scattered on rough, some near fairway
+  const rockCount = 3 + Math.floor(rand() * 4);
   for (let ri = 0; ri < rockCount; ri++) {
     let ra = 0;
     while (ra++ < 30) {
-      const rx = 2 + Math.floor(rand() * (w - 4));
-      const ry = 1 + Math.floor(rand() * (h - 2));
+      let rx, ry;
+      if (rand() < 0.6 && fairwayCells.length) {
+        const fc = fairwayCells[Math.floor(rand() * fairwayCells.length)];
+        const off = 1 + Math.floor(rand() * 3);
+        const ang = rand() * Math.PI * 2;
+        rx = Math.round(fc.x + Math.cos(ang) * off);
+        ry = Math.round(fc.y + Math.sin(ang) * off);
+      } else {
+        rx = 2 + Math.floor(rand() * (w - 4));
+        ry = 1 + Math.floor(rand() * (h - 2));
+      }
+      if (!inBounds(grid, rx, ry)) continue;
       if (grid[ry][rx] !== 0) continue;
       if (Math.hypot(rx - tee.x, ry - tee.y) < 3) continue;
       if (Math.hypot(rx - cup.x, ry - cup.y) < 3) continue;
