@@ -38,7 +38,7 @@ function App({ customCourse }) {
     setTweaks(prev => ({ ...prev, [key]: val }));
   }, []);
   const difficulty = tweaks.difficulty;
-  const mulligansMax = difficulty === 'Casual' ? 9 : difficulty === 'Tour' ? 3 : 6;
+  const mulligansMax = difficulty === 'Casual' ? 6 : difficulty === 'Tour' ? 1 : 3;
 
   const [seed, setSeed] = useState(() => 1024);
   const [holeIdx, setHoleIdx] = useState(0);
@@ -443,27 +443,93 @@ function App({ customCourse }) {
     let bounceMsg = '';
     let treeHitPos = null;
 
-    let ricochetDir = null;
-    if (shotValidation.ricochet) {
-      const DIRS_ALL = window.DiceGolf.dirNames;
-      const DIRV_ALL = window.DiceGolf.dirVectors;
-      ricochetDir = DIRS_ALL[Math.floor(Math.random() * 8)];
-      const rv = DIRV_ALL[ricochetDir];
-      const rx = shotValidation.ricochet.x + rv.dx;
-      const ry = shotValidation.ricochet.y + rv.dy;
-      if (window.DiceGolf.inBounds(hole.grid, rx, ry)) {
-        const rt = hole.grid[ry][rx];
-        if (rt !== 3 && rt !== 4 && rt !== 6) {
-          actualLanding = { x: rx, y: ry };
-        }
+    // Chain bounces: rock→ricochet, tree→bounce back, water→drop. Detect loops.
+    const bounceLog = [];
+    const bouncePath = [];
+    const visited = new Set();
+    let pos = { ...actualLanding };
+    let chainLimit = 10;
+
+    function nearestFairway(from) {
+      let best = null, bestDist = Infinity;
+      for (let fy = 0; fy < hole.h; fy++)
+        for (let fx = 0; fx < hole.w; fx++)
+          if (hole.grid[fy][fx] === 1) {
+            const d = Math.hypot(fx - from.x, fy - from.y);
+            if (d < bestDist) { bestDist = d; best = { x: fx, y: fy }; }
+          }
+      return best || hole.tee;
+    }
+
+    while (chainLimit-- > 0) {
+      const key = `${pos.x},${pos.y}`;
+      if (visited.has(key)) {
+        pos = nearestFairway(pos);
+        bounceLog.push('loop→fairway');
+        break;
       }
-      bounceMsg = ` Hit a rock — ricochet ${ricochetDir}!`;
-    } else if (shotValidation.bounced) {
-      treeHitPos = { ...landing };
-      actualLanding = shotValidation.bounced;
-      landing = actualLanding;
-      bounceMsg = ' Hit a tree — bounced back!';
-    } else if (landing.x === hole.cup.x && landing.y === hole.cup.y) {
+      visited.add(key);
+
+      if (!window.DiceGolf.inBounds(hole.grid, pos.x, pos.y)) {
+        pos = nearestFairway(landing);
+        bounceLog.push('OOB→fairway');
+        break;
+      }
+
+      const terrain = hole.grid[pos.y][pos.x];
+
+      if (terrain === 6) {
+        // Rock — ricochet random direction
+        const DIRS_ALL = window.DiceGolf.dirNames;
+        const DIRV_ALL = window.DiceGolf.dirVectors;
+        const d = DIRS_ALL[Math.floor(Math.random() * 8)];
+        const rv = DIRV_ALL[d];
+        bounceLog.push(`rock→${d}`);
+        bouncePath.push({ ...pos });
+        pos = { x: pos.x + rv.dx, y: pos.y + rv.dy };
+        continue;
+      }
+      if (terrain === 4) {
+        if (!treeHitPos) treeHitPos = { ...pos };
+        const DIRS_ALL = window.DiceGolf.dirNames;
+        const DIRV_ALL = window.DiceGolf.dirVectors;
+        const d = DIRS_ALL[Math.floor(Math.random() * 8)];
+        const rv = DIRV_ALL[d];
+        bounceLog.push(`tree→${d}`);
+        bouncePath.push({ ...pos });
+        pos = { x: pos.x + rv.dx, y: pos.y + rv.dy };
+        continue;
+      }
+      if (terrain === 3) {
+        const dp = waterDrop(hole, pos);
+        bounceLog.push('water→drop');
+        bouncePath.push({ ...pos });
+        pos = dp;
+        break;
+      }
+      // Safe terrain — stop
+      break;
+    }
+
+    if (chainLimit <= 0) {
+      pos = nearestFairway(pos);
+      bounceLog.push('limit→fairway');
+    }
+
+    actualLanding = pos;
+    if (bouncePath.length > 0) bouncePath.push({ ...pos });
+    if (bounceLog.length > 0) {
+      bounceMsg = ' ' + bounceLog.join(', ') + '!';
+      const hasWater = bounceLog.some(b => b.startsWith('water'));
+      if (hasWater) {
+        // Water penalty stroke
+        setShots(s => [...s, { from: ball, to: ball, slopePath: [], fresh: false, hook: null, bendPos: null, treeHit: null, penalty: true }]);
+      }
+    }
+
+    if (actualLanding.x === hole.cup.x && actualLanding.y === hole.cup.y) {
+      holedOut = true;
+    } else if (!bounceLog.length && landing.x === hole.cup.x && landing.y === hole.cup.y) {
       holedOut = true;
     } else if (crossedCup && overshootBy1) {
       holedOut = true;
@@ -471,14 +537,14 @@ function App({ customCourse }) {
     }
 
     let slopePath = [];
-    if (!holedOut && !shotValidation.bounced) {
+    if (!holedOut) {
       const sl = applySlopes(hole, actualLanding);
       actualLanding = sl.finalPos;
       slopePath = sl.slopePath;
       if (actualLanding.x === hole.cup.x && actualLanding.y === hole.cup.y) holedOut = true;
     }
 
-    const newShot = { from: ball, to: landing, slopePath, fresh: true, hook: activeHook, bendPos, treeHit: treeHitPos };
+    const newShot = { from: ball, to: landing, slopePath, fresh: true, hook: activeHook, bendPos, treeHit: treeHitPos, bouncePath: bouncePath.length > 0 ? bouncePath : null };
     setShots(s => [...s.map(x => ({ ...x, fresh: false })), newShot]);
     setBall(actualLanding);
 
@@ -501,9 +567,9 @@ function App({ customCourse }) {
       hook: activeHook,
       hookAmount: activeHook ? actualHookAmount : null,
       mods: mods.length ? mods : null,
-      bounced: !!shotValidation.bounced,
+      bounced: bounceLog.length > 0,
       hazard,
-      result: shotValidation.bounced ? 'tree bounce' : (landing.x === hole.cup.x && landing.y === hole.cup.y ? 'holed out' : null),
+      result: bounceLog.length > 0 ? bounceLog.join(', ') : (actualLanding.x === hole.cup.x && actualLanding.y === hole.cup.y ? 'holed out' : null),
     }]);
 
     if (useFocusActive) {
