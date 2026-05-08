@@ -33,6 +33,9 @@ const DEFAULT_TWEAKS = {
 };
 
 function App({ customCourse }) {
+  const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('dg-tutorial-seen'));
+  const closeTutorial = () => { setShowTutorial(false); localStorage.setItem('dg-tutorial-seen', '1'); };
+
   const [tweaks, setTweaks] = useState(DEFAULT_TWEAKS);
   const setTweak = useCallback((key, val) => {
     setTweaks(prev => ({ ...prev, [key]: val }));
@@ -431,13 +434,6 @@ function App({ customCourse }) {
     const shotValidation = activeHook
       ? validateHookAtAmount(hole, ball, dir, plannedDistance, activeHook, actualHookAmount, { fromFairway, overTrees })
       : legalShotPath(hole, ball, dir, plannedDistance, { fromFairway, overTrees });
-    const crossedCup = shotValidation.path?.some(p => p.x === hole.cup.x && p.y === hole.cup.y) || false;
-    const overshootBy1 = (shotValidation.path?.length >= 1) && (() => {
-      const idx = shotValidation.path.findIndex(p => p.x === hole.cup.x && p.y === hole.cup.y);
-      if (idx < 0) return false;
-      return idx === shotValidation.path.length - 2;
-    })();
-
     let holedOut = false;
     let actualLanding = landing;
     let bounceMsg = '';
@@ -529,11 +525,6 @@ function App({ customCourse }) {
 
     if (actualLanding.x === hole.cup.x && actualLanding.y === hole.cup.y) {
       holedOut = true;
-    } else if (!bounceLog.length && landing.x === hole.cup.x && landing.y === hole.cup.y) {
-      holedOut = true;
-    } else if (crossedCup && overshootBy1) {
-      holedOut = true;
-      actualLanding = hole.cup;
     }
 
     let slopePath = [];
@@ -735,7 +726,7 @@ function App({ customCourse }) {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark"><span className="dot" /> Dice Golf · v1.0</div>
+          <div className="brand-mark"><svg width="10" height="10" viewBox="0 0 10 10" style={{flexShrink:0}}><circle cx="5" cy="5" r="4.5" fill="var(--paper)" stroke="var(--ink)" strokeWidth="0.8"/><circle cx="3.8" cy="3.8" r="0.6" fill="oklch(0.8 0.01 82)"/><circle cx="5.8" cy="4.2" r="0.5" fill="oklch(0.8 0.01 82)"/><circle cx="4.5" cy="5.8" r="0.5" fill="oklch(0.8 0.01 82)"/></svg> Dice Golf · v1.0</div>
           <div className="brand-title">Dice <em>Golf</em></div>
         </div>
         <div className="course-meta">
@@ -743,6 +734,7 @@ function App({ customCourse }) {
           <div className="name">{courseName}</div>
           <div className="coords">{customCourse ? 'Custom Course' : `Lat ${(38 + (seed % 7) + (seed % 100) / 100).toFixed(3)}°N · Long ${(94 + (seed % 11) + (seed % 100) / 100).toFixed(3)}°W`}</div>
           <div className="topbar-actions">
+            <button className="topbar-btn" onClick={() => setShowTutorial(true)}>How to Play</button>
             <button className="topbar-btn" onClick={newCourse}>New Course</button>
             <a href="#creator" className="topbar-btn">Creator</a>
           </div>
@@ -1169,6 +1161,115 @@ function App({ customCourse }) {
             <div className="label">{bigToast.label}</div>
             <div className="value">{bigToast.value}</div>
             <div className="sub">{bigToast.sub}</div>
+          </div>
+        </div>
+      )}
+
+      {showTutorial && (
+        <div className="tutorial-overlay" onClick={closeTutorial}>
+          <div className="tutorial-modal" onClick={e => e.stopPropagation()}>
+            <div className="tutorial-header">
+              <h2>How to Play</h2>
+              <button className="tutorial-close" onClick={closeTutorial}>✕</button>
+            </div>
+            <div className="tutorial-body">
+              <div className="tutorial-section">
+                <h3>Goal</h3>
+                <p>Get the ball in the cup in as few strokes as possible across 9 holes.</p>
+              </div>
+              <div className="tutorial-section">
+                <h3>Each Shot</h3>
+                <ol>
+                  <li><strong>Pick a club</strong> from the compass center</li>
+                  <li><strong>Roll the die</strong> by clicking it (or press the same key again)</li>
+                  <li><strong>Pick a direction</strong> — click once to preview, click again to confirm</li>
+                </ol>
+              </div>
+              <div className="tutorial-section">
+                <h3>Clubs</h3>
+                <table className="tutorial-table">
+                  <thead><tr><th>Club</th><th>Die</th><th>Notes</th></tr></thead>
+                  <tbody>
+                    <tr><td>Driver</td><td>d8</td><td>Tee only, flies over trees</td></tr>
+                    <tr><td>Woods</td><td>d6</td><td>Over trees from fairway</td></tr>
+                    <tr><td>P. Wedge</td><td>d3</td><td>No terrain modifiers</td></tr>
+                    <tr><td>Putter</td><td>1</td><td>Fixed distance, no roll</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div className="tutorial-section">
+                <h3>Terrain</h3>
+                <div className="tutorial-terrain">
+                  <span><b style={{color:'var(--fairway)'}}>■</b> Fairway — +1 to Woods/Driver</span>
+                  <span><b style={{color:'var(--sand)'}}>■</b> Sand — −1 to Woods/Driver</span>
+                  <span><b style={{color:'var(--water)'}}>■</b> Water — +1 penalty, ball drops beside</span>
+                  <span><b style={{color:'var(--tree)'}}>■</b> Trees — ball bounces random direction</span>
+                  <span><b style={{color:'var(--rock)'}}>■</b> Rock — ball ricochets random direction</span>
+                  <span><b style={{color:'var(--green)'}}>■</b> Green — putt to finish</span>
+                </div>
+              </div>
+              <div className="tutorial-section">
+                <h3>Hooks</h3>
+                <p>Curve your shot left or right. Ball travels 2/3 straight then bends. The hook distance is random (0-2), adding risk. Available on all clubs except Putter.</p>
+              </div>
+              <div className="tutorial-section">
+                <h3>Focus</h3>
+                <p>Starts at 0. Earn +1 by completing a hole without using it (max 3). Spend 1 for +1 distance on any shot. Going negative makes you Frustrated (−1 per point to all rolls, min distance 1). Carries between holes.</p>
+              </div>
+              <div className="tutorial-section">
+                <h3>Mulligans</h3>
+                <p>Redo a shot. Standard: 3 per course. Free re-roll available on tee shots.</p>
+              </div>
+              <div className="tutorial-section">
+                <h3>Numpad Controls</h3>
+                <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <div>
+                    <div className="hotkey-section" style={{ textAlign: 'center', marginBottom: 6 }}>Aim & Shoot</div>
+                    <div className="numpad-visual">
+                      <div className="numpad-main">
+                        <kbd className="nk">NW<b>7</b></kbd><kbd className="nk">N<b>8</b></kbd><kbd className="nk">NE<b>9</b></kbd>
+                        <kbd className="nk">W<b>4</b></kbd><kbd className="nk nk-accent">OK<b>5</b></kbd><kbd className="nk">E<b>6</b></kbd>
+                        <kbd className="nk">SW<b>1</b></kbd><kbd className="nk">S<b>2</b></kbd><kbd className="nk">SE<b>3</b></kbd>
+                        <kbd className="nk nk-wide">back<b>0</b></kbd><kbd className="nk">fcs<b>.</b></kbd>
+                      </div>
+                      <div className="numpad-side">
+                        <kbd className="nk nk-sm">mul<b>*</b></kbd>
+                        <kbd className="nk nk-sm">hk L<b>−</b></kbd>
+                        <kbd className="nk nk-sm">hk R<b>+</b></kbd>
+                        <kbd className="nk nk-sm nk-tall nk-accent">GO<b>↵</b></kbd>
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="hotkey-section" style={{ textAlign: 'center', marginBottom: 6 }}>Club Select</div>
+                    <div className="numpad-clubs">
+                      <kbd className="nk nk-club">DRV<b>4</b></kbd><kbd className="nk nk-club">WDS<b>5</b></kbd>
+                      <kbd className="nk nk-club">WDG<b>1</b></kbd><kbd className="nk nk-club">PUT<b>2</b></kbd>
+                    </div>
+                    <p style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--ink-3)', marginTop: 8, textAlign: 'center' }}>Press same key to roll</p>
+                  </div>
+                </div>
+                <table className="tutorial-table" style={{ marginTop: 10 }}>
+                  <thead><tr><th>Key</th><th>Action</th></tr></thead>
+                  <tbody>
+                    <tr><td><kbd>4</kbd> <kbd>5</kbd> <kbd>1</kbd> <kbd>2</kbd></td><td>Select club (Driver / Woods / Wedge / Putter)</td></tr>
+                    <tr><td>Same club key</td><td>Roll the die</td></tr>
+                    <tr><td><kbd>7</kbd><kbd>8</kbd><kbd>9</kbd><kbd>4</kbd><kbd>6</kbd><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></td><td>Aim direction (NW/N/NE/W/E/SW/S/SE)</td></tr>
+                    <tr><td>Same dir / <kbd>5</kbd> / <kbd>Enter</kbd></td><td>Confirm shot</td></tr>
+                    <tr><td><kbd>+</kbd></td><td>Toggle hook right</td></tr>
+                    <tr><td><kbd>−</kbd></td><td>Toggle hook left</td></tr>
+                    <tr><td><kbd>.</kbd></td><td>Toggle focus (+1 distance)</td></tr>
+                    <tr><td><kbd>*</kbd></td><td>Use mulligan</td></tr>
+                    <tr><td><kbd>0</kbd></td><td>Re-roll (tee) / back to club select</td></tr>
+                    <tr><td><kbd>Esc</kbd></td><td>Back to club select (putter)</td></tr>
+                    <tr><td><kbd>5</kbd> / <kbd>Enter</kbd></td><td>Next hole (when complete)</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="tutorial-footer">
+              <button className="btn primary" onClick={closeTutorial}>Got it!</button>
+            </div>
           </div>
         </div>
       )}
